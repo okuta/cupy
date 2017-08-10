@@ -638,7 +638,8 @@ cdef tuple _guess_routine(str name, dict cache, list ops, list in_args, dtype):
             in_types = tuple(in_args)
             op = ()
         else:
-            in_types = tuple([i.dtype.type for i in in_args])
+            in_types = tuple([i.dtype.type if isinstance(i, ndarray) else None
+                              for i in in_args])
             op = cache.get(in_types, ())
 
         if op is ():
