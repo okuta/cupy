@@ -7,6 +7,8 @@ import numpy
 import six
 
 import cupy
+from cupy.core import compile
+from cupy.core import emit
 from cupy.core import flags
 from cupy import cuda
 from cupy.cuda import device
@@ -24,11 +26,10 @@ from libcpp cimport vector
 from cupy.core cimport internal
 from cupy.cuda cimport cublas
 from cupy.cuda cimport function
+from cupy.cuda cimport memory
 from cupy.cuda cimport pinned_memory
 from cupy.cuda cimport runtime
-from cupy.cuda cimport memory
-from cupy.core import compile
-from cupy.core import emit
+from cupy.cuda cimport stream as stream_module
 
 
 DEF MAX_NDIM = 25
@@ -100,7 +101,7 @@ cdef class ndarray:
             self.data = memptr
         self.base = None
 
-        if order == 'C':
+        if order in ('C', None):
             self._strides = internal.get_contiguous_strides(
                 self._shape, self.itemsize, is_c_contiguous=True)
             self._c_contiguous = True
@@ -312,6 +313,8 @@ cdef class ndarray:
         if subok is not None:
             raise TypeError('subok is not supported yet')
 
+        if order is None:
+            order = 'K'
         if order not in ['C', 'F', 'A', 'K']:
             raise TypeError('order not understood')
 
@@ -447,7 +450,7 @@ cdef class ndarray:
             value = value.item()
 
         if value == 0 and self._c_contiguous:
-            self.data.memset_async(0, self.nbytes, stream.Stream(True))
+            self.data.memset_async(0, self.nbytes)
         else:
             elementwise_copy(value, self, dtype=self.dtype)
 
@@ -860,6 +863,7 @@ cdef class ndarray:
             kth (int or sequence of ints): Element index to partition by. If
                 supplied with a sequence of k-th it will partition all elements
                 indexed by k-th of them into their sorted position at once.
+
             axis (int): Axis along which to sort. Default is -1, which means
                 sort along the last axis.
 
@@ -892,7 +896,53 @@ cdef class ndarray:
         # kth is ignored.
         self.sort(axis=axis)
 
-    # TODO(okuta): Implement argpartition
+    def argpartition(self, kth, axis=-1):
+        """Returns the indices that would partially sort an array.
+
+        Args:
+            kth (int or sequence of ints): Element index to partition by. If
+                supplied with a sequence of k-th it will partition all elements
+                indexed by k-th of them into their sorted position at once.
+            axis (int or None): Axis along which to sort. Default is -1, which
+                means sort along the last axis. If None is supplied, the array
+                is flattened before sorting.
+
+        Returns:
+            cupy.ndarray: Array of the same type and shape as ``a``.
+
+        .. seealso::
+            :func:`cupy.argpartition` for full documentation,
+            :meth:`numpy.ndarray.argpartition`
+
+        """
+        if axis is None:
+            data = self.reshape(self.size)
+            axis = -1
+        else:
+            data = self
+
+        ndim = data.ndim
+        if axis < 0:
+            axis += ndim
+        if not (0 <= axis < ndim):
+            raise _AxisError('Axis out of range')
+
+        length = data.shape[axis]
+        if isinstance(kth, int):
+            kth = kth,
+        for k in kth:
+            if k < 0:
+                k += length
+            if not (0 <= k < length):
+                raise ValueError('kth(={}) out of bounds {}'.format(k, length))
+
+        # TODO(takgi) For its implementation reason, cupy.ndarray.argsort
+        # currently performs full argsort with Thrust's efficient radix sort
+        # algoritm.
+
+        # kth is ignored.
+        return cupy.argsort(data, axis=axis)
+
     # TODO(okuta): Implement searchsorted
 
     def nonzero(self):
@@ -994,7 +1044,7 @@ cdef class ndarray:
 
     # TODO(okuta): Implement ptp
 
-    cpdef ndarray clip(self, a_min, a_max, out=None):
+    cpdef ndarray clip(self, a_min=None, a_max=None, out=None):
         """Returns an array with values limited to [a_min, a_max].
 
         .. seealso::
@@ -1002,6 +1052,18 @@ cdef class ndarray:
            :meth:`numpy.ndarray.clip`
 
         """
+        if a_min is None and a_max is None:
+            raise ValueError('array_clip: must set either max or min')
+        if a_min is None:
+            if issubclass(self.dtype.type, numpy.floating):
+                a_min = self.dtype.type('-inf')
+            elif issubclass(self.dtype.type, numpy.integer):
+                a_min = numpy.iinfo(self.dtype.type).min
+        if a_max is None:
+            if issubclass(self.dtype.type, numpy.floating):
+                a_max = self.dtype.type('inf')
+            elif issubclass(self.dtype.type, numpy.integer):
+                a_max = numpy.iinfo(self.dtype.type).max
         return _clip(self, a_min, a_max, out=out)
 
     # TODO(okuta): Implement round
@@ -1049,7 +1111,8 @@ cdef class ndarray:
            :meth:`numpy.ndarray.var`
 
         """
-        return _var(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims)
+        return _var(self, axis=axis, dtype=dtype, out=out, ddof=ddof,
+                    keepdims=keepdims)
 
     cpdef ndarray std(self, axis=None, dtype=None, out=None, ddof=0,
                       keepdims=False):
@@ -1060,7 +1123,8 @@ cdef class ndarray:
            :meth:`numpy.ndarray.std`
 
         """
-        return _std(self, axis=axis, dtype=dtype, out=out, keepdims=keepdims)
+        return _std(self, axis=axis, dtype=dtype, out=out, ddof=ddof,
+                    keepdims=keepdims)
 
     cpdef ndarray prod(self, axis=None, dtype=None, out=None, keepdims=None):
         """Returns the product along a given axis.
@@ -1387,14 +1451,12 @@ cdef class ndarray:
 
         slices += noneslices * (ndim - <Py_ssize_t>len(slices) + n_newaxes)
 
-        if len(slices) > self.ndim + n_newaxes:
-            raise IndexError('too many indices for array')
-
         # Check if advanced is true,
         # and convert list/NumPy arrays to cupy.ndarray
         advanced = False
         mask_exists = False
         for i, s in enumerate(slices):
+            is_list = False
             if isinstance(s, (list, numpy.ndarray)):
                 is_list = isinstance(s, list)
                 s = array(s)
@@ -1406,11 +1468,14 @@ cdef class ndarray:
                 if issubclass(s.dtype.type, numpy.integer):
                     advanced = True
                 elif issubclass(s.dtype.type, numpy.bool_):
-                    mask_exists = True
+                    mask_exists = not is_list
                 else:
                     raise IndexError(
                         'arrays used as indices must be of integer or boolean '
                         'type. (actual: {})'.format(s.dtype.type))
+
+        if not mask_exists and len(slices) > self.ndim + n_newaxes:
+            raise IndexError('too many indices for array')
 
         if mask_exists:
             n_not_slice_none = 0
@@ -1448,7 +1513,7 @@ cdef class ndarray:
                 else:
                     raise IndexError(
                         'only integers, slices (`:`), ellipsis (`...`),'
-                        'numpy.newaxis (`None`) and integer or'
+                        'numpy.newaxis (`None`) and integer or '
                         'boolean arrays are valid indices')
 
             # check if this is a combination of basic and advanced indexing
@@ -1596,6 +1661,9 @@ cdef class ndarray:
     def __float__(self):
         return float(self.get())
 
+    def __complex__(self):
+        return complex(self.get())
+
     def __oct__(self):
         return oct(self.get())
 
@@ -1637,6 +1705,7 @@ cdef class ndarray:
         Args:
             stream (cupy.cuda.Stream): CUDA stream object. If it is given, the
                 copy runs asynchronously. Otherwise, the copy is synchronous.
+                The default uses CUDA stream object of the current context.
 
         Returns:
             numpy.ndarray: Copy of the array on host memory.
@@ -1650,6 +1719,10 @@ cdef class ndarray:
         a_cpu = numpy.empty(self._shape, dtype=self.dtype)
         ptr = a_cpu.ctypes.get_as_parameter()
         if stream is None:
+            stream_ptr = stream_module.get_current_stream_ptr()
+        else:
+            stream_ptr = stream.ptr
+        if stream_ptr == 0:
             a_gpu.data.copy_to_host(ptr, a_gpu.nbytes)
         else:
             a_gpu.data.copy_to_host_async(ptr, a_gpu.nbytes, stream)
@@ -1662,6 +1735,7 @@ cdef class ndarray:
             arr (numpy.ndarray): The source array on the host memory.
             stream (cupy.cuda.Stream): CUDA stream object. If it is given, the
                 copy runs asynchronously. Otherwise, the copy is synchronous.
+                The default uses CUDA stream object of the current context.
 
         """
         if not isinstance(arr, numpy.ndarray):
@@ -1682,6 +1756,10 @@ cdef class ndarray:
 
         ptr = arr.ctypes.get_as_parameter()
         if stream is None:
+            stream_ptr = stream_module.get_current_stream_ptr()
+        else:
+            stream_ptr = stream.ptr
+        if stream_ptr == 0:
             self.data.copy_from_host(ptr, self.nbytes)
         else:
             self.data.copy_from_host_async(ptr, self.nbytes, stream)
@@ -1807,29 +1885,18 @@ include "reduction.pxi"
 
 cdef _id = 'out0 = in0'
 
-_elementwise_copy = create_ufunc(
+elementwise_copy = create_ufunc(
     'cupy_copy',
     ('?->?', 'b->b', 'B->B', 'h->h', 'H->H', 'i->i', 'I->I', 'l->l', 'L->L',
      'q->q', 'Q->Q', 'e->e', 'f->f', 'd->d', 'F->F', 'D->D'),
-    'out0 = out0_type(in0)')
+    'out0 = out0_type(in0)', default_casting='unsafe')
 # complex numbers requires out0 = complex<T>(in0)
 
-
-def elementwise_copy(*args, **kwargs):
-    kwargs['casting'] = 'unsafe'
-    return _elementwise_copy(*args, **kwargs)
-
-
-_elementwise_copy_where = create_ufunc(
+elementwise_copy_where = create_ufunc(
     'cupy_copy_where',
     ('??->?', 'b?->b', 'B?->B', 'h?->h', 'H?->H', 'i?->i', 'I?->I', 'l?->l',
      'L?->L', 'q?->q', 'Q?->Q', 'e?->e', 'f?->f', 'd?->d', 'F?->F', 'D?->D'),
-    'if (in1) out0 = in0')
-
-
-def elementwise_copy_where(*args, **kwargs):
-    kwargs['casting'] = 'unsafe'
-    return _elementwise_copy_where(*args, **kwargs)
+    'if (in1) out0 = in0', default_casting='unsafe')
 
 
 cdef _divmod_float = '''
@@ -2122,6 +2189,53 @@ cpdef ndarray asfortranarray(ndarray a, dtype=None):
 # Array manipulation routines
 # -----------------------------------------------------------------------------
 
+def _has_element(vector.vector[Py_ssize_t] source, Py_ssize_t n):
+    for elem in source:
+        if elem == n:
+            return True
+    return False
+
+
+cpdef vector.vector[Py_ssize_t] normalize_axis_tuple(axis, Py_ssize_t ndim) \
+        except *:
+    """Normalizes an axis argument into a tuple of non-negative integer axes.
+
+    """
+    if numpy.isscalar(axis):
+        axis = (axis,)
+
+    cdef vector.vector[Py_ssize_t] ret
+    for ax in axis:
+        if ax >= ndim or ax < -ndim:
+            raise _AxisError('axis {} is out of bounds for array of '
+                             'dimension {}'.format(ax, ndim))
+        ret.push_back(ax % ndim)
+    return ret
+
+
+cpdef ndarray moveaxis(ndarray a, source, destination):
+    cdef vector.vector[Py_ssize_t] src = normalize_axis_tuple(source, a.ndim)
+    cdef vector.vector[Py_ssize_t] dest = normalize_axis_tuple(destination,
+                                                               a.ndim)
+
+    if len(src) != len(dest):
+        raise ValueError('`source` and `destination` arguments must have '
+                         'the same number of elements')
+
+    cdef vector.vector[Py_ssize_t] order
+    cdef Py_ssize_t n = 0
+    for i in range(a.ndim):
+        n = <Py_ssize_t>i
+        if not _has_element(src, n):
+            order.push_back(n)
+
+    for i in range(len(src)):
+        n = <Py_ssize_t>i
+        order.insert(order.begin() + dest[n], src[n])
+
+    return a.transpose(order)
+
+
 cpdef ndarray rollaxis(ndarray a, Py_ssize_t axis, Py_ssize_t start=0):
     cdef Py_ssize_t i, ndim = a.ndim
     cdef vector.vector[Py_ssize_t] axes
@@ -2393,34 +2507,49 @@ cpdef ndarray _repeat(ndarray a, repeats, axis=None):
 
     """
     cdef ndarray ret
+
+    # Scalar and size 1 'repeat' arrays broadcast to any shape, for all
+    # other inputs the dimension must match exactly.
+    cdef bint broadcast = False
     if isinstance(repeats, int):
         if repeats < 0:
             raise ValueError(
                 "'repeats' should not be negative: {}".format(repeats))
-        if axis is None:
-            a = a.reshape((-1, 1))
-            ret = ndarray((a.size, repeats), dtype=a.dtype)
-            if ret.size:
-                ret[...] = a
-            return ret.ravel()
-
-        repeats = [repeats] * a._shape[axis % a._shape.size()]
+        broadcast = True
+        repeats = [repeats]
     elif cpython.PySequence_Check(repeats):
         for rep in repeats:
             if rep < 0:
                 raise ValueError(
                     "all elements of 'repeats' should not be negative: {}"
                     .format(repeats))
-        if axis is None:
-            raise ValueError(
-                "'axis' should be specified if 'repeats' is sequence")
-        if a.shape[axis] != len(repeats):
-            raise ValueError(
-                "'repeats' and 'axis' of 'a' should be same length: {} != {}"
-                .format(a.shape[axis], len(repeats)))
+        if len(repeats) == 1:
+            broadcast = True
     else:
         raise ValueError(
             "'repeats' should be int or sequence: {}".format(repeats))
+
+    if axis is None:
+        if broadcast:
+            a = a.reshape((-1, 1))
+            ret = ndarray((a.size, repeats[0]), dtype=a.dtype)
+            if ret.size:
+                ret[...] = a
+            return ret.ravel()
+        else:
+            a = a.ravel()
+            axis = 0
+    elif not (-a.ndim <= axis < a.ndim):
+        raise _AxisError(
+            'axis {} is out of bounds for array of dimension {}'.format(
+                axis, a.ndim))
+
+    if broadcast:
+        repeats = repeats * a._shape[axis % a._shape.size()]
+    elif a.shape[axis] != len(repeats):
+        raise ValueError(
+            "'repeats' and 'axis' of 'a' should be same length: {} != {}"
+            .format(a.shape[axis], len(repeats)))
 
     if axis < 0:
         axis += a.ndim
@@ -2498,47 +2627,51 @@ cpdef ndarray concatenate(tup, axis, shape, dtype):
 
     ret = ndarray(shape, dtype=dtype)
 
-    if len(tup) > 3:
-        all_same_type = True
-        all_one_and_contiguous = True
-        dtype = tup[0].dtype
-        for a in tup:
-            all_same_type = all_same_type and (a.dtype == dtype)
-            all_one_and_contiguous = (
-                all_one_and_contiguous and a._c_contiguous and
-                a._shape[axis] == 1)
-
-        if all_same_type:
-            ptrs = numpy.ndarray(len(tup), numpy.int64)
-            for i, a in enumerate(tup):
-                ptrs[i] = a.data.ptr
-            x = array(ptrs)
-
-            if all_one_and_contiguous:
-                base = <int>internal.prod_ssize_t(shape[axis + 1:])
-                _concatenate_kernel_one(x, base, ret)
-            else:
-                ndim = tup[0].ndim
-                x_strides = numpy.ndarray((len(tup), ndim), numpy.int32)
-                cum_sizes = numpy.ndarray(len(tup), numpy.int32)
-                cum = 0
-                for i, a in enumerate(tup):
-                    for j in range(ndim):
-                        x_strides[i, j] = <int>a._strides[j]
-                    cum_sizes[i] = cum
-                    cum += <int>a._shape[axis]
-
-                _concatenate_kernel(
-                    x, axis, array(cum_sizes), array(x_strides), ret)
-            return ret
-
-    skip = (slice(None),) * axis
-    i = 0
+    all_same_type = True
+    all_one_and_contiguous = True
+    any_contiguous_on_axis = False
+    total_bytes = 0
+    dtype = tup[0].dtype
     for a in tup:
-        aw = a._shape[axis]
-        ret[skip + (slice(i, i + aw),)] = a
-        i += aw
+        all_same_type = all_same_type and (a.dtype == dtype)
+        all_one_and_contiguous = (
+            all_one_and_contiguous and a._c_contiguous and
+            a._shape[axis] == 1)
+        any_contiguous_on_axis = (
+            any_contiguous_on_axis or
+            a._strides[axis] == a.itemsize)
+        total_bytes += a.size * a.itemsize
 
+    if ((not all_same_type or not any_contiguous_on_axis) and
+            (len(tup) < 256 or total_bytes / len(tup) > 524288)):
+        skip = (slice(None),) * axis
+        i = 0
+        for a in tup:
+            aw = a._shape[axis]
+            ret[skip + (slice(i, i + aw),)] = a
+            i += aw
+    else:
+        ptrs = numpy.ndarray(len(tup), numpy.int64)
+        for i, a in enumerate(tup):
+            ptrs[i] = a.data.ptr
+        x = array(ptrs)
+
+        if all_one_and_contiguous:
+            base = <int>internal.prod_ssize_t(shape[axis + 1:])
+            _concatenate_kernel_one(x, base, ret)
+        else:
+            ndim = tup[0].ndim
+            x_strides = numpy.ndarray((len(tup), ndim), numpy.int32)
+            cum_sizes = numpy.ndarray(len(tup), numpy.int32)
+            cum = 0
+            for i, a in enumerate(tup):
+                for j in range(ndim):
+                    x_strides[i, j] = <int>a._strides[j]
+                cum_sizes[i] = cum
+                cum += <int>a._shape[axis]
+
+            _concatenate_kernel(
+                x, axis, array(cum_sizes), array(x_strides), ret)
     return ret
 
 cdef _concatenate_kernel_one = ElementwiseKernel(
@@ -2593,6 +2726,30 @@ cdef _concatenate_kernel = ElementwiseKernel(
     reduce_dims=False
 )
 
+
+cpdef int size(ndarray a, axis=None) except *:
+    """Returns the number of elements along a given axis.
+
+    Args:
+        a (ndarray): Input data.
+        axis (int or None): Axis along which the elements are counted.
+            When it is ``None``, it returns the total number of elements.
+
+    Returns:
+        int: Number of elements along the given axis.
+
+    """
+    cdef int index, ndim
+    if axis is None:
+        return a.size
+    else:
+        index = axis
+        ndim = a._shape.size()
+        if index < 0:
+            index += ndim
+        if not 0 <= index < ndim:
+            raise IndexError('index out of range')
+        return a._shape[index]
 
 # -----------------------------------------------------------------------------
 # Binary operations
@@ -3007,14 +3164,12 @@ cpdef _scatter_op(ndarray a, slices, value, op):
 
     slices += noneslices * (ndim - <Py_ssize_t>len(slices) + n_newaxes)
 
-    if len(slices) > a.ndim + n_newaxes:
-        raise IndexError('too many indices for array')
-
     # Check if advanced is true,
     # and convert list/NumPy arrays to cupy.ndarray
     advanced = False
     mask_exists = False
     for i, s in enumerate(slices):
+        is_list = False
         if isinstance(s, (list, numpy.ndarray)):
             is_list = isinstance(s, list)
             s = array(s)
@@ -3026,11 +3181,14 @@ cpdef _scatter_op(ndarray a, slices, value, op):
             if issubclass(s.dtype.type, numpy.integer):
                 advanced = True
             elif issubclass(s.dtype.type, numpy.bool_):
-                mask_exists = True
+                mask_exists = not is_list
             else:
                 raise IndexError(
                     'arrays used as indices must be of integer or boolean '
                     'type. (actual: {})'.format(s.dtype.type))
+
+    if not mask_exists and len(slices) > a.ndim + n_newaxes:
+        raise IndexError('too many indices for array')
 
     if mask_exists:
         n_not_slice_none = 0
@@ -3068,7 +3226,7 @@ cpdef _scatter_op(ndarray a, slices, value, op):
             else:
                 raise IndexError(
                     'only integers, slices (`:`), ellipsis (`...`),'
-                    'numpy.newaxis (`None`) and integer or'
+                    'numpy.newaxis (`None`) and integer or '
                     'boolean arrays are valid indices')
 
         # check if this is a combination of basic and advanced indexing
@@ -3207,12 +3365,10 @@ cpdef _prepare_multiple_array_indexing(ndarray a, list slices):
     for s in a.shape[ri:li:-1]:
         strides.insert(0, s * strides[0])
 
-    # convert all negative indices to wrap_indices
-    for i in range(li, ri + 1):
-        slices[i] %= a_interm_shape[i]
-
-    flattened_indexes = [stride * s
-                         for stride, s in zip(strides, slices[li:ri + 1])]
+    # wrap all out-of-bound indices
+    flattened_indexes = [
+        stride * (s % a_interm_shape_i) for stride, s, a_interm_shape_i
+        in zip(strides, slices[li:ri + 1], a_interm_shape[li:ri + 1])]
 
     # do stack: flattened_indexes = stack(flattened_indexes, axis=0)
     concat_shape = (len(flattened_indexes),) + br.shape
@@ -3383,6 +3539,11 @@ cpdef ndarray matmul(ndarray a, ndarray b, ndarray out=None):
     cdef Py_ssize_t batchCount
     cdef ndarray ap, bp, outp
 
+    orig_a_shape = a.shape
+    orig_b_shape = b.shape
+    if len(orig_a_shape) == 0 or len(orig_b_shape) == 0:
+        raise ValueError('Scalar operands are not allowed, use \'*\' instead')
+
     ret_dtype = numpy.result_type(a.dtype, b.dtype)
     dtype = numpy.find_common_type((ret_dtype, 'f'), ())
 
@@ -3445,7 +3606,7 @@ cpdef ndarray matmul(ndarray a, ndarray b, ndarray out=None):
     b = view
 
     out = ndarray(out_shape, dtype=dtype)
-    out.data.memset(0, out.nbytes)
+    out.data.memset_async(0, out.nbytes)
 
     out_view = out.view()
     out_view_shape = out.shape
@@ -3468,9 +3629,16 @@ cpdef ndarray matmul(ndarray a, ndarray b, ndarray out=None):
     *la, ka, n = a.shape
     *lb, m, kb = b.shape
 
-    assert ka == kb
+    if ka != kb:
+        raise ValueError(
+            'shapes ({}) and ({}) not aligned'.format(
+                ','.join([str(_) for _ in orig_a_shape]),
+                ','.join([str(_) for _ in orig_b_shape])))
     for la_, lb_ in zip(la, lb):
-        assert la_ == lb_ or la_ == 1 or lb_ == 1
+        if not (la_ == lb_ or la_ == 1 or lb_ == 1):
+            raise ValueError(
+                'operands could not be broadcast together with '
+                'remapped shapes')
 
     batchCount = 1  # batchCount = numpy.prod(la)
     for i in la:

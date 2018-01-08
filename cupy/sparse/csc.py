@@ -69,11 +69,43 @@ class csc_matrix(compressed._compressed_sparse_matrix):
         return (y, x)
 
     # TODO(unno): Implement __getitem__
+
+    def __mul__(self, other):
+        if cupy.isscalar(other):
+            return self._with_data(self.data * other)
+        elif cupy.sparse.isspmatrix_csr(other):
+            return cusparse.csrgemm(self.T, other, transa=True)
+        elif isspmatrix_csc(other):
+            return cusparse.csrgemm(self.T, other.T, transa=True, transb=True)
+        elif cupy.sparse.isspmatrix(other):
+            return cusparse.csrgemm(self.T, other.tocsr(), transa=True)
+        elif cupy.sparse.base.isdense(other):
+            if other.ndim == 0:
+                return self._with_data(self.data * other)
+            elif other.ndim == 1:
+                return cusparse.csrmv(
+                    self.T, cupy.asfortranarray(other), transa=True)
+            elif other.ndim == 2:
+                return cusparse.csrmm2(
+                    self.T, cupy.asfortranarray(other), transa=True)
+            else:
+                raise ValueError('could not interpret dimensions')
+        else:
+            return NotImplemented
+
     # TODO(unno): Implement argmax
     # TODO(unno): Implement argmin
     # TODO(unno): Implement check_format
     # TODO(unno): Implement diagonal
-    # TODO(unno): Implement eliminate_zeros
+
+    def eliminate_zeros(self):
+        """Removes zero entories in place."""
+        t = self.T
+        t.eliminate_zeros()
+        compress = t.T
+        self.data = compress.data
+        self.indices = compress.indices
+        self.indptr = compress.indptr
 
     # TODO(unno): Implement max
     # TODO(unno): Implement maximum

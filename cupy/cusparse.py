@@ -74,11 +74,11 @@ def csrmv(a, x, y=None, alpha=1, beta=0, transa=False):
         cupy.ndarray: Calculated ``y``.
 
     """
-    if a.shape[1] != len(x):
-        raise ValueError('dimension mismatch')
     assert y is None or y.flags.f_contiguous
 
     a_shape = a.shape if not transa else a.shape[::-1]
+    if a_shape[1] != len(x):
+        raise ValueError('dimension mismatch')
 
     handle = device.get_cusparse_handle()
     m, n = a_shape
@@ -91,7 +91,7 @@ def csrmv(a, x, y=None, alpha=1, beta=0, transa=False):
     _call_cusparse(
         'csrmv', dtype,
         handle, _transpose_flag(transa),
-        m, n, a.nnz, alpha.data, a._descr.descriptor,
+        a.shape[0], a.shape[1], a.nnz, alpha.data, a._descr.descriptor,
         a.data.data.ptr, a.indptr.data.ptr, a.indices.data.ptr,
         x.data.ptr, beta.data, y.data.ptr)
 
@@ -575,4 +575,28 @@ def dense2csr(x):
         x.data.ptr, m, nnz_per_row.data.ptr,
         data.data.ptr, indptr.data.ptr, indices.data.ptr)
     # Note that a desciptor is recreated
+    return cupy.sparse.csr_matrix((data, indices, indptr), shape=x.shape)
+
+
+def csr2csr_compress(x, tol):
+    assert x.dtype == 'f' or x.dtype == 'd'
+
+    handle = device.get_cusparse_handle()
+    m, n = x.shape
+
+    nnz_per_row = cupy.empty(m, 'i')
+    nnz = _call_cusparse(
+        'nnz_compress', x.dtype,
+        handle, m, x._descr.descriptor,
+        x.data.data.ptr, x.indptr.data.ptr, nnz_per_row.data.ptr, tol)
+    data = cupy.zeros(nnz, x.dtype)
+    indptr = cupy.empty(m + 1, 'i')
+    indices = cupy.zeros(nnz, 'i')
+    _call_cusparse(
+        'csr2csr_compress', x.dtype,
+        handle, m, n, x._descr.descriptor,
+        x.data.data.ptr, x.indices.data.ptr, x.indptr.data.ptr,
+        x.nnz, nnz_per_row.data.ptr, data.data.ptr, indices.data.ptr,
+        indptr.data.ptr, tol)
+
     return cupy.sparse.csr_matrix((data, indices, indptr), shape=x.shape)

@@ -620,9 +620,7 @@ cdef class ReductionKernel(_BaseReductionKernel):
             self.reduce_type = reduce_type
 
     def __call__(self, *args, axis=None, out=None, keepdims=None, **kwargs):
-        """__call__(self, *args, axis=None, out=None, keepdims=None, **kwargs)
-
-        Compiles and invokes the reduction kernel.
+        """Compiles and invokes the reduction kernel.
 
         The compilation runs only if the kernel is not cached. Note that the
         kernels with different argument dtypes, ndims, or axis are not

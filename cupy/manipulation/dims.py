@@ -1,4 +1,5 @@
 import six
+import warnings
 
 import cupy
 from cupy import core
@@ -25,12 +26,10 @@ def _atleast_nd_helper(n, arys):
 
     res = []
     for a in arys:
-        if isinstance(a, cupy.ndarray):
-            if a.ndim < n:
-                new_shape = _atleast_nd_shape_map[(n, a.ndim)](a.shape)
-                a = a.reshape(*new_shape)
-        else:
-            raise TypeError('Unsupported type {}'.format(type(a)))
+        a = cupy.asarray(a)
+        if a.ndim < n:
+            new_shape = _atleast_nd_shape_map[(n, a.ndim)](a.shape)
+            a = a.reshape(*new_shape)
         res.append(a)
 
     if len(res) == 1:
@@ -154,6 +153,13 @@ def expand_dims(a, axis):
     shape = a.shape
     if axis < 0:
         axis = axis + len(shape) + 1
+    if axis > a.ndim or axis < 0:
+        # TODO(unno): Too large and too small axis is deprecated in NumPy 1.13
+        # We need to fix this behavior after NumPy forbids it.
+        warnings.warn(
+            'Both axis > a.ndim and axis < -a.ndim - 1 are deprecated and '
+            'will raise an AxisError in the future.',
+            DeprecationWarning)
     return a.reshape(shape[:axis] + (1,) + shape[axis:])
 
 

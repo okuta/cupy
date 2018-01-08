@@ -69,9 +69,16 @@ cdef dict _kind_score = {
 cdef dict _python_type_to_numpy_type = {
     float: numpy.dtype(float).type,
     complex: numpy.dtype(complex).type,
-    bool: numpy.dtype(bool).type}
-for i in six.integer_types:
-    _python_type_to_numpy_type[i] = numpy.int64
+    bool: numpy.dtype(bool).type,
+}
+
+
+cpdef _python_scalar_to_numpy_scalar(t, x):
+    if t in _python_type_to_numpy_type:
+        numpy_type = _python_type_to_numpy_type[t]
+    else:
+        numpy_type = numpy.uint64 if x >= 0x8000000000000000 else numpy.int64
+    return numpy_type(x)
 
 
 cdef str _get_ctype_name(dtype):
@@ -83,7 +90,7 @@ cdef str _get_ctype_name(dtype):
     return name
 
 
-cdef void _preprocess_args(list args, list arg_infos):
+cdef _preprocess_args(list args, list arg_infos):
     """Preprocesses arguments for kernel invocation
 
     This function modifies args and arg_infos in-place.
@@ -103,7 +110,7 @@ cdef void _preprocess_args(list args, list arg_infos):
                     'device: array device = %d while current = %d'
                     % (arr_dev.id, dev_id))
         elif ai.is_python_scalar:
-            args[i] = _python_type_to_numpy_type[ai.typ](args[i])
+            args[i] = _python_scalar_to_numpy_scalar(ai.typ, args[i])
             arg_infos[i] = ArgInfo_from_arg(args[i], True)
         elif ai.is_numpy_scalar:
             pass
@@ -1321,13 +1328,20 @@ cdef class _UfuncKernel(_BaseElementwiseKernel):
         tuple _ops
         str _preamble
         dict _routine_cache
+        str _default_casting
 
-    def __init__(self, nin, nout, name, ops, preamble):
+    def __init__(self, nin, nout, name, ops, preamble, default_casting):
         self.nin = nin
         self.nout = nout
         self.nargs = nin + nout
         self._ops = ops
         self._preamble = preamble
+        if default_casting is None:
+            # Note default behavior of casting is 'same_kind' on numpy>=1.10
+            self._default_casting = 'same_kind'
+        else:
+            self._default_casting = default_casting
+
         in_params = tuple(
             ParameterInfo.parse('T in%d' % i, True)
             for i in range(nin))
@@ -1359,8 +1373,7 @@ cdef class _UfuncKernel(_BaseElementwiseKernel):
             self, arg_infos, kwargs):
 
         dtype = kwargs.pop('dtype', None)
-        # Note default behavior of casting is 'same_kind' on numpy>=1.10
-        casting = kwargs.pop('casting', 'same_kind')
+        casting = kwargs.pop('casting', self._default_casting)
         if dtype is not None and not isinstance(dtype, numpy.dtype):
             dtype = numpy.dtype(dtype)
         if kwargs:
@@ -1488,7 +1501,9 @@ class ufunc(object):
         nargs (int): Number of all arguments.
 
     """
-    def __init__(self, name, nin, nout, ops, preamble='', doc=''):
+
+    def __init__(self, name, nin, nout, ops, preamble='', doc='',
+                 default_casting=None):
         self.name = name
         self.nin = nin
         self.nout = nout
@@ -1496,7 +1511,8 @@ class ufunc(object):
         self._ops = ops
         assert len(preamble) == 0, preamble
         self.__doc__ = doc
-        self.k = _UfuncKernel(nin, nout, name, tuple(ops), preamble)
+        self.k = _UfuncKernel(nin, nout, name, tuple(ops), preamble,
+                              default_casting)
 
     def __repr__(self):
         return "<ufunc '%s'>" % self.name
@@ -1517,9 +1533,7 @@ class ufunc(object):
         return types
 
     def __call__(self, *args, **kwargs):
-        """__call__(*args, **kwargs)
-
-        Applies the universal function to arguments elementwise.
+        """Applies the universal function to arguments elementwise.
 
         Args:
             args: Input arguments. Each of them can be a :class:`cupy.ndarray`
@@ -1537,7 +1551,8 @@ class ufunc(object):
         return self.k(*args, **kwargs)
 
 
-cpdef create_ufunc(name, ops, routine=None, preamble='', doc=''):
+cpdef create_ufunc(name, ops, routine=None, preamble='', doc='',
+                   default_casting=None):
     """ Creates ufunc instance.
 
     Arguments:
@@ -1551,7 +1566,9 @@ cpdef create_ufunc(name, ops, routine=None, preamble='', doc=''):
         routine: Default operation code.
         preamble:
         doc:
+        default_casting:
     """
+
     _ops = []
     for t in ops:
         if isinstance(t, str):
@@ -1573,4 +1590,6 @@ cpdef create_ufunc(name, ops, routine=None, preamble='', doc=''):
         out_types = tuple([numpy.dtype(t).type for t in out_types])
         _ops.append((in_types, out_types, rt))
 
-    return ufunc(name, len(_ops[0][0]), len(_ops[0][1]), _ops, preamble, doc)
+    ret = ufunc(name, len(_ops[0][0]), len(_ops[0][1]), _ops, preamble, doc,
+                default_casting)
+    return ret
