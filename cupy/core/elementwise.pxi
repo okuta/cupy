@@ -5,7 +5,6 @@ from cupy.cuda import compiler
 from cupy import util
 
 from cupy.cuda cimport device
-from cupy.cuda cimport function
 from cupy.cuda import stream as stream_module
 
 
@@ -216,8 +215,8 @@ cdef class ParameterInfo:
         self.is_const = is_const
 
     @staticmethod
-    def indexer(str name, bint raw):
-        return ParameterInfo(name, None, None, raw, False)
+    def indexer(str name):
+        return ParameterInfo(name, None, None, False, False)
 
     @staticmethod
     def parse(str param, bint is_const):
@@ -237,19 +236,16 @@ cdef class ParameterInfo:
                 raise Exception('Unknown keyword "%s"' % i)
 
         t, name = s[-2:]
-        if t == 'CIndexer':
-            return ParameterInfo.indexer(name, raw)
+        if len(t) == 1:
+            ctype = t
         else:
-            if len(t) == 1:
-                ctype = t
-            else:
-                dtype_ = numpy.dtype(t)
-                dtype = dtype_.type
-                if dtype_.name != t:
-                    raise ValueError('Wrong type %s' % t)
-                ctype = _get_ctype_name(dtype)
+            dtype_ = numpy.dtype(t)
+            dtype = dtype_.type
+            if dtype_.name != t:
+                raise ValueError('Wrong type %s' % t)
+            ctype = _get_ctype_name(dtype)
 
-            return ParameterInfo(name, dtype, ctype, raw, is_const)
+        return ParameterInfo(name, dtype, ctype, raw, is_const)
 
     def __repr__(self):
         return ('<ParameterInfo name={!r} dtype={} ctype={} raw={} '
@@ -271,6 +267,7 @@ cdef class ArgInfo:
         Py_hash_t _hash
         tuple _key
 
+        readonly bint is_indexer
         readonly bint is_ndarray
         readonly bint is_python_scalar
         readonly bint is_numpy_scalar
@@ -309,6 +306,7 @@ cdef class ArgInfo:
         if self.typ is ndarray:
             self.is_ndarray = True
         elif self.typ is Indexer:
+            self.is_indexer = True
             pass
         elif self.typ is slice:
             pass
@@ -345,15 +343,16 @@ cdef class ArgInfo:
             self._key = tuple(l)
         return self._key
 
+    cdef _eq(self, ArgInfo other):
+        if self is other:
+            return True
+        return self._get_key() == other._get_key()
+
     def __richcmp__(ArgInfo x, ArgInfo y, int op):
         if op == 2:
-            if x is y:
-                return True
-            return x._get_key() == y._get_key()
-
+            return x._eq(y)
         elif op == 3:
-            return not (x == y)
-
+            return not x._eq(y)
         raise NotImplementedError()
 
     cpdef get_dtype(self):
@@ -398,15 +397,12 @@ cdef class ArgInfo:
         return self._strides
 
     cpdef str get_base_type_expr(self):
-        if self.typ is Indexer:
-            t = 'CIndexer<%d>' % self.get_ndim()
-        else:
-            dt = self.get_ctype_name()
-            if self.typ is ndarray:
-                t = 'CArray<%s, %d>' % (dt, self.get_ndim())
-            else:
-                t = dt
-        return t
+        if self.is_indexer:
+            return 'CIndexer<%d>' % self.get_ndim()
+        dt = self.get_ctype_name()
+        if self.is_ndarray:
+            return 'CArray<%s, %d>' % (dt, self.get_ndim())
+        return dt
 
     cdef str get_ctype_name(self):
         return _get_ctype_name(self.get_dtype())
@@ -431,8 +427,8 @@ cdef class ParameterList:
     cdef:
         readonly tuple params  # tuple of ParameterInfo
         readonly tuple arg_infos  # tuple of ArgInfo
-        readonly list _var_names
-        readonly list _base_types
+        readonly list var_names
+        readonly list base_types
         readonly int nparams
         readonly int nin
         readonly int nout
@@ -448,8 +444,8 @@ cdef class ParameterList:
         self.nin = nin
         self.nout = nout
 
-        self._var_names = None
-        self._base_types = None
+        self._ensure_var_names()
+        self._ensure_base_types()
 
     def __hash__(self):
         return hash(self.params) ^ hash(self.arg_infos)
@@ -460,15 +456,9 @@ cdef class ParameterList:
                     x.arg_infos == y.arg_infos)
         raise NotImplementedError()
 
-    cpdef list var_names(self):
-        self._ensure_var_names()
-        return self._var_names
-
     cdef _ensure_var_names(self):
         cdef ParameterInfo p
         cdef ArgInfo a
-        if self._var_names is not None:
-            return
         ret = []
         for p, a in zip(self.params, self.arg_infos):
             if not p.raw and a.is_ndarray:
@@ -476,38 +466,25 @@ cdef class ParameterList:
             else:
                 var_name = p.name
             ret.append(var_name)
-        self._var_names = ret
-
-    cpdef list base_types(self):
-        self._ensure_base_types()
-        return self._base_types
+        self.var_names = ret
 
     cdef _ensure_base_types(self):
-        if self._base_types is not None:
-            return
         ret = []
         for i in range(self.nparams):
             arg_info = <ArgInfo>self.arg_infos[i]
             ret.append(arg_info.get_base_type_expr())
-        self._base_types = ret
+        self.base_types = ret
 
     cpdef str get_kernel_params_decl(self):
-        self._ensure_var_names()
-        self._ensure_base_types()
         return ', '.join([
-            '%s %s' % (self._base_types[i], self._var_names[i])
+            '%s %s' % (self.base_types[i], self.var_names[i])
             for i in range(self.nparams)])
 
     cpdef str get_entry_function_params_decl(self):
-        self._ensure_var_names()
-        self._ensure_base_types()
-        return ', '.join([
-            '%s %s' % (self._base_types[i], self._var_names[i])
-            for i in range(self.nparams)])
+        return self.get_kernel_params_decl()
 
     cpdef str get_entry_function_param_list(self):
-        self._ensure_var_names()
-        return ', '.join(self._var_names)
+        return ', '.join(self.var_names)
 
     cpdef list generate_ref_variable_decl_init_stmts(self):
         cdef ParameterInfo p
@@ -852,15 +829,14 @@ cdef class _BaseElementwiseKernelCallContext(_BaseKernelCallContext):
         raise NotImplementedError()
 
     cpdef get_op_param_list(self, ParameterList param_list):
-        lst = ['i'] + param_list.var_names()
-        return ', '.join(lst)
+        return ', '.join(['i'] + param_list.var_names)
 
     cpdef get_op_params_decl(self, ParameterList param_list):
-        lst = ['const ptrdiff_t& i'] + \
-              ['{}& {}'.format(base_type, var_name)
-               for base_type, var_name
-               in zip(param_list.base_types(), param_list.var_names())]
-        return ', '.join(lst)
+        return ', '.join(
+            ['const ptrdiff_t& i'] +
+            ['{}& {}'.format(base_type, var_name)
+             for base_type, var_name
+             in zip(param_list.base_types, param_list.var_names)])
 
     cpdef emit_op_class(
             self, emitter, class_name, ParameterList param_list):
@@ -1053,9 +1029,7 @@ cdef class _BaseElementwiseKernel(_BaseKernel):
         super(_BaseElementwiseKernel, self).__init__(
             in_params, out_params, name, options)
 
-        self.inout_params = in_params + out_params
-        self.params = self.inout_params + (
-            ParameterInfo.parse('CIndexer _ind', False),)
+        self.params = self.inout_params + (ParameterInfo.indexer('_ind'),)
         self.reduce_dims = reduce_dims
         self.broadcast_skip_raw = broadcast_skip_raw
         self.loop_prep = loop_prep
@@ -1327,8 +1301,8 @@ cdef class _UfuncKernel(_BaseElementwiseKernel):
     cdef:
         tuple _ops
         str _preamble
-        dict _routine_cache
         str _default_casting
+        dict _routine_cache
 
     def __init__(self, nin, nout, name, ops, preamble, default_casting):
         self.nin = nin
@@ -1343,13 +1317,11 @@ cdef class _UfuncKernel(_BaseElementwiseKernel):
             self._default_casting = default_casting
 
         in_params = tuple(
-            ParameterInfo.parse('T in%d' % i, True)
+            ParameterInfo('in%d' % i, None, 'T', False, True)
             for i in range(nin))
         out_params = tuple(
-            ParameterInfo.parse('T out%d' % i, False)
+            ParameterInfo('out%d' % i, None, 'T', False, False)
             for i in range(nout))
-        self.params = in_params + out_params + \
-            (ParameterInfo.parse('CIndexer _ind', False),)
         self._routine_cache = {}
 
         super(_UfuncKernel, self).__init__(
@@ -1476,8 +1448,7 @@ cdef tuple _guess_routine(
         return op
     if dtype is None:
         dtype = tuple([a.get_dtype().type for a in in_arg_infos])
-    raise TypeError('Wrong type (%s) of arguments for %s' %
-                    (dtype, name))
+    raise TypeError('Wrong type (%s) of arguments for %s' % (dtype, name))
 
 
 class ufunc(object):

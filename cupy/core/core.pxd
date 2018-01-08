@@ -71,6 +71,7 @@ cdef class Indexer:
         readonly Py_ssize_t size
         readonly tuple shape
 
+    cdef bint _eq(self, Indexer other)
     cdef CPointer get_pointer(self)
 
 

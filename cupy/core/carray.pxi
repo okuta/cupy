@@ -48,15 +48,16 @@ cdef class Indexer:
     def __hash__(self):
         return hash(self.size) ^ hash(self.shape)
 
+    cdef bint _eq(self, Indexer other):
+        if self is other:
+            return True
+        return self.size == other.size and self.shape == other.shape
+
     def __richcmp__(Indexer x, Indexer y, int op):
         if op == 2:
-            if x is y:
-                return True
-            return x.size == y.size and x.shape == y.shape
-
+            return x._eq(y)
         elif op == 3:
-            return not (x == y)
-
+            return not x._eq(y)
         raise NotImplementedError()
 
     @property

@@ -91,8 +91,8 @@ cdef class _BaseReductionKernel(_BaseKernel):
 
         self.params = (
             in_params + out_params +
-            _parse_param_infos(
-                'CIndexer _in_ind, CIndexer _out_ind', False) +
+            (ParameterInfo.indexer('_in_ind'),
+             ParameterInfo.indexer('_out_ind')) +
             _parse_param_infos('int32 _block_stride', True))
         self.reduce_dims = reduce_dims
         self.identity = identity
