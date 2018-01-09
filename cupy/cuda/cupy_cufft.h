@@ -3,10 +3,15 @@
 #ifndef INCLUDE_GUARD_CUPY_CUFFT_H
 #define INCLUDE_GUARD_CUPY_CUFFT_H
 
-#ifndef CUPY_NO_CUDA
-#  include <cufft.h>
+#if !defined(CUPY_NO_CUDA) && !defined(CUPY_USE_HIP)
+#include <cufft.h>
 
-#else  // CUPY_NO_CUDA
+#else  // #if !defined(CUPY_NO_CUDA) && !defined(CUPY_USE_HIP)
+
+#ifdef CUPY_USE_HIP
+#include "cupy_cuda.h"
+#endif
+
 extern "C" {
 
 typedef float cufftReal;
@@ -99,6 +104,6 @@ cufftResult_t cufftExecZ2D(...) {
 
 }  // extern "C"
 
-#endif  // CUPY_NO_CUDA
+#endif  // #if !defined(CUPY_NO_CUDA) && !defined(CUPY_USE_HIP)
 
 #endif  // INCLUDE_GUARD_CUPY_CUFFT_H

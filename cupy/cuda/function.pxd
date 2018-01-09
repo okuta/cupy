@@ -1,5 +1,6 @@
 cdef class CPointer:
     cdef void* ptr
+    cdef Py_ssize_t size
 
 
 cdef class Function:

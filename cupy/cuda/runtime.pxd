@@ -67,6 +67,13 @@ cpdef enum:
 
     errorMemoryAllocation = 2
 
+###############################################################################
+# Const value
+###############################################################################
+cpdef bint _is_hip_environment
+cpdef int deviceAttributeComputeCapabilityMajor
+cpdef int deviceAttributeComputeCapabilityMinor
+
 
 ###############################################################################
 # Error handling

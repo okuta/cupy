@@ -1389,9 +1389,7 @@ cdef class ndarray:
     @property
     def real(self):
         if self.dtype.kind == 'c':
-            view = self.view(self.dtype.char.lower())
-            view._set_shape_and_strides(self.shape, self.strides)
-            return view
+            return real(self)
         return self
 
     @real.setter
@@ -1404,10 +1402,7 @@ cdef class ndarray:
     @property
     def imag(self):
         if self.dtype.kind == 'c':
-            view = self.view(self.dtype.char.lower())
-            view._set_shape_and_strides(self.shape, self.strides)
-            view.data = view.data + self.itemsize // 2
-            return view
+            return imag(self)
         new_array = ndarray(self.shape, dtype=self.dtype)
         new_array.fill(0)
         return new_array
@@ -2472,7 +2467,7 @@ cpdef ndarray concatenate_method(tup, int axis):
 
 cpdef ndarray _concatenate(list arrays, Py_ssize_t axis, tuple shape, dtype):
     cdef ndarray a, ret
-    cdef Py_ssize_t i
+    cdef int i
     cdef bint all_same_type, same_shape_and_contiguous
     cdef Py_ssize_t axis_size
     # If arrays are large, Issuing each copy method is efficient.
@@ -4206,7 +4201,8 @@ _clip = create_ufunc(
     'cupy_clip',
     ('???->?', 'bbb->b', 'BBB->B', 'hhh->h', 'HHH->H', 'iii->i', 'III->I',
      'lll->l', 'LLL->L', 'qqq->q', 'QQQ->Q', 'eee->e', 'fff->f', 'ddd->d'),
-    'out0 = in0 < in1 ? in1 : (in0 > in2 ? in2 : in0)')
+    'out0 = in0 < in1 ? out0_type(in1)'
+    ' : (in0 > in2 ? out0_type(in2) : out0_type(in0))')
 
 
 # -----------------------------------------------------------------------------
@@ -4294,7 +4290,11 @@ def _inclusive_scan_kernel(dtype, block_size):
     name = "inclusive_scan_kernel"
     dtype = _get_typename(dtype)
     source = string.Template("""
-    extern "C" __global__ void ${name}(const CArray<${dtype}, 1> src,
+    extern "C" __global__ void ${name}(
+    #ifdef __HIPCC__
+        hipLaunchParm lp,
+    #endif
+        const CArray<${dtype}, 1> src,
         CArray<${dtype}, 1> dst){
         long long n = src.size();
         extern __shared__ ${dtype} temp[];
@@ -4341,7 +4341,11 @@ def _add_scan_blocked_sum_kernel(dtype):
     name = "add_scan_blocked_sum_kernel"
     dtype = _get_typename(dtype)
     source = string.Template("""
-    extern "C" __global__ void ${name}(CArray<${dtype}, 1> src_dst){
+    cupy_global__ void ${name}(
+    #ifdef __HIPCC__
+        hipLaunchParm lp,
+    #endif
+        CArray<${dtype}, 1> src_dst){
         long long n = src_dst.size();
         unsigned int idxBase = (blockDim.x + 1) * (blockIdx.x + 1);
         unsigned int idxAdded = idxBase + threadIdx.x;
@@ -4363,7 +4367,11 @@ def _nonzero_1d_kernel(src_dtype, index_dtype):
     index_dtype = _get_typename(index_dtype)
 
     source = string.Template("""
-    extern "C" __global__ void ${name}(const CArray<${src_dtype}, 1> src,
+    cupy_global__ void ${name}(
+    #ifdef __HIPCC__
+        hipLaunchParm lp,
+    #endif
+        const CArray<${src_dtype}, 1> src,
         const CArray<${index_dtype}, 1> scaned_index,
         CArray<${index_dtype}, 1> dst){
         int thid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -4387,7 +4395,11 @@ def _nonzero_kernel(src_dtype, src_ndim, index_dtype, dst_dtype):
     dst_dtype = _get_typename(dst_dtype)
 
     source = string.Template("""
-        extern "C" __global__ void ${name}(const CArray<${src_dtype}, 1> src,
+        extern "C" __global__ void ${name}(
+        #ifdef __HIPCC__
+            hipLaunchParm lp,
+        #endif
+            const CArray<${src_dtype}, 1> src,
             CIndexer<${src_ndim}> shape,
             const CArray<${index_dtype}, 1> scaned_index,
             CArray<${dst_dtype}, 1> dst){

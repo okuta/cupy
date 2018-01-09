@@ -8,11 +8,14 @@ from cupy import util
 
 from cupy.cuda cimport device
 from cupy.cuda cimport function
+from cupy.cuda cimport runtime
 
 
 cpdef _get_simple_elementwise_kernel(
-        params, operation, name, preamble,
-        loop_prep='', after_loop='', options=()):
+        str params, str operation, str name, str preamble,
+        str loop_prep='', str after_loop='', options=()):
+    if runtime._is_hip_environment:
+        params = 'hipLaunchParm lp, ' + params
     module_code = string.Template('''
     ${preamble}
     extern "C" __global__ void ${name}(${params}) {
@@ -160,7 +163,7 @@ cpdef tuple _get_args_info(list args):
 
 cpdef str _get_kernel_params(tuple params, tuple args_info):
     cdef ParameterInfo p
-    ret = []
+    cdef list ret = []
     for i in range(len(params)):
         p = params[i]
         type, dtype, ndim = <tuple>(args_info[i])
@@ -378,6 +381,21 @@ cdef tuple _broadcast(list args, tuple params, bint use_size):
     return value, brod.shape
 
 
+cdef tuple _process_input_args(list args, tuple types):
+    cdef list ret = []
+    cdef list ret_types = []
+    for i, t in enumerate(types):
+        x = args[i]
+        if not isinstance(x, ndarray):
+            if runtime._is_hip_environment:
+                if t is numpy.float16:
+                    t = numpy.float32
+            x = t(x)
+        ret.append(x)
+        ret_types.append(t)
+    return ret, tuple(ret_types)
+
+
 cdef list _get_out_args(list out_args, tuple out_types, tuple out_shape,
                         str casting):
     if not out_args:
@@ -539,6 +557,8 @@ cdef class ElementwiseKernel:
         """
 
         cdef function.Function kern
+        cdef list inout_args
+        cdef tuple in_types
 
         size = kwargs.pop('size', None)
         stream = kwargs.pop('stream', None)
@@ -578,8 +598,7 @@ cdef class ElementwiseKernel:
         if 0 in shape:
             return ret
 
-        inout_args = [x if isinstance(x, ndarray) else in_types[i](x)
-                      for i, x in enumerate(in_args)]
+        inout_args, in_types = _process_input_args(in_args, in_types)
         inout_args += out_args
 
         if self.reduce_dims:
@@ -769,6 +788,8 @@ class ufunc(object):
         """
 
         cdef function.Function kern
+        cdef list inout_args
+        cdef tuple in_types
 
         out = kwargs.pop('out', None)
         dtype = kwargs.pop('dtype', None)
@@ -813,10 +834,8 @@ class ufunc(object):
         if 0 in shape:
             return ret
 
-        inout_args = []
-        for i, t in enumerate(in_types):
-            x = broad.values[i]
-            inout_args.append(x if isinstance(x, ndarray) else t(x))
+        inout_args, in_types = _process_input_args(list(broad.values),
+                                                   in_types)
         inout_args.extend(out_args)
         inout_args, shape = _reduce_dims(inout_args, self._params, shape)
         indexer = Indexer(shape)

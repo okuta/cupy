@@ -13,6 +13,8 @@ cpdef _get_simple_reduction_kernel(
         type_preamble, input_expr, output_expr, preamble, options):
     if identity is None:
         identity = ''
+    if runtime._is_hip_environment:
+        params = 'hipLaunchParm lp, ' + params
     module_code = string.Template('''
     ${type_preamble}
     ${preamble}
@@ -27,7 +29,7 @@ cpdef _get_simple_reduction_kernel(
     extern "C" __global__ void ${name}(${params}) {
       extern __shared__ _type_reduce _sdata_raw[];
       _type_reduce *_sdata = _sdata_raw;
-      unsigned int _tid = threadIdx.x;
+      unsigned int _tid = cupyThreadIdx_x;
 
       int _J_offset = _tid / _block_stride;
       int _j_offset = _J_offset * _out_ind.size();

@@ -68,8 +68,8 @@ sign = core.create_ufunc(
     ''')
 
 
-_float_maximum = \
-    'out0 = isnan(in0) ? in0 : isnan(in1) ? in1 : max(in0, in1)'
+_float_maximum = ('out0 = (isnan(in0) | isnan(in1)) ? out0_type(NAN) : '
+                  'out0_type(max(in0, in1))')
 maximum = core.create_ufunc(
     'cupy_maximum',
     ('??->?', 'bb->b', 'BB->B', 'hh->h', 'HH->H', 'ii->i', 'II->I', 'll->l',
@@ -87,8 +87,8 @@ maximum = core.create_ufunc(
     ''')
 
 
-_float_minimum = \
-    'out0 = isnan(in0) ? in0 : isnan(in1) ? in1 : min(in0, in1)'
+_float_minimum = ('out0 = (isnan(in0) | isnan(in1)) ? out0_type(NAN) : '
+                  'out0_type(min(in0, in1))')
 minimum = core.create_ufunc(
     'cupy_minimum',
     ('??->?', 'bb->b', 'BB->B', 'hh->h', 'HH->H', 'ii->i', 'II->I', 'll->l',
@@ -109,7 +109,10 @@ minimum = core.create_ufunc(
 fmax = core.create_ufunc(
     'cupy_fmax',
     ('??->?', 'bb->b', 'BB->B', 'hh->h', 'HH->H', 'ii->i', 'II->I', 'll->l',
-     'LL->L', 'qq->q', 'QQ->Q', 'ee->e', 'ff->f', 'dd->d'),
+     'LL->L', 'qq->q', 'QQ->Q',
+     ('ee->e', 'out0 = fmax(in0, in1)'),
+     ('ff->f', 'out0 = fmax(in0, in1)'),
+     ('dd->d', 'out0 = fmax(in0, in1)')),
     'out0 = max(in0, in1)',
     doc='''Takes the maximum of two arrays elementwise.
 
@@ -120,10 +123,15 @@ fmax = core.create_ufunc(
     ''')
 
 
+_float_min = ('out0 = isnan(in0) ? out0_type(in1) : '
+              '(isnan(in1) ? out0_type(in0) : out0_type(min(in0, in1)))')
 fmin = core.create_ufunc(
     'cupy_fmin',
     ('??->?', 'bb->b', 'BB->B', 'hh->h', 'HH->H', 'ii->i', 'II->I', 'll->l',
-     'LL->L', 'qq->q', 'QQ->Q', 'ee->e', 'ff->f', 'dd->d'),
+     'LL->L', 'qq->q', 'QQ->Q',
+     ('ee->e', 'out0 = fmin(in0, in1)'),
+     ('ff->f', 'out0 = fmin(in0, in1)'),
+     ('dd->d', 'out0 = fmin(in0, in1)')),
     'out0 = min(in0, in1)',
     doc='''Takes the minimum of two arrays elementwise.
 

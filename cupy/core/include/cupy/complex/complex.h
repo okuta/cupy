@@ -168,7 +168,12 @@ struct complex {
   __device__ inline void imag(T im) { m_data[1] = im; }
 
  private:
-  T m_data[2];
+  union {
+    struct {
+      T m0__, m1__;  // Avoid HIP compiler restriction
+    };
+    T m_data[2];
+  };
 };
 
 /* --- General Functions --- */

@@ -28,6 +28,7 @@ cdef class CArray(CPointer):
             self.val.shape_and_strides[i] = arr._shape[i]
             self.val.shape_and_strides[i + ndim] = arr._strides[i]
         self.ptr = <void*>&self.val
+        self.size = (ndim * 2 + 2) * 8
 
 
 cdef struct _CIndexer:
@@ -45,6 +46,7 @@ cdef class CIndexer(CPointer):
         for i in range(len(shape)):
             self.val.shape_and_index[i] = shape[i]
         self.ptr = <void*>&self.val
+        self.size = (len(shape) * 2 + 1) * 8
 
 
 cdef class Indexer:
@@ -141,7 +143,7 @@ cpdef function.Module compile_with_cache(
                           'to environment variable `CUDA_PATH`')
         else:
             path = os.path.join(cuda_path, 'include')
-            options += ('-I ' + path,)
+            options += ('-I' + path,)
 
     return cuda.compile_with_cache(source, options, arch, cachd_dir,
                                    extra_source)
