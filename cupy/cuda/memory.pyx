@@ -136,6 +136,7 @@ cpdef _set_peer_access(int device, int peer):
     finally:
         runtime.setDevice(current)
 
+
 cdef class Chunk:
 
     """A chunk points to a device memory.
@@ -171,6 +172,7 @@ cdef class Chunk:
         self.stream_ptr = stream_ptr
         self.prev = None
         self.next = None
+
 
 cdef class MemoryPointer:
 
@@ -529,6 +531,7 @@ cdef class SingleDeviceMemoryPool:
         # cudaMalloc() is aligned to at least 512 bytes
         # cf. https://gist.github.com/sonots/41daaa6432b1c8b27ef782cd14064269
         self._allocation_unit_size = 512
+        self._index_size_default_threshold = self._index_size_threshold = 512
         self._in_use = {}
         self._free = {}
         self._allocator = allocator
@@ -580,6 +583,8 @@ cdef class SingleDeviceMemoryPool:
                 arena_index.insert(arena_index.begin() + index, bin_index)
                 arena.insert(index, free_list)
             free_list.add(chunk)
+            if size > self._index_size_threshold:
+                self._compaction(stream_ptr)
         finally:
             rlock.unlock_fastrlock(self._free_lock)
 
@@ -641,6 +646,24 @@ cdef class SingleDeviceMemoryPool:
             merged.next = remaining.next
             merged.next.prev = merged
         return merged
+
+    cpdef _compaction(self, size_t stream_ptr):
+        # need self._free_lock
+        cdef list arena
+        cdef set free_list
+        cdef vector.vector[int]* arena_index
+        cdef size_t index
+
+        arena = self._free[stream_ptr]
+        arena_index = &self._index[stream_ptr]
+        for index in range(len(arena) -1, -1, -1):
+            free_list = arena[index]
+            if free_list:
+                continue
+            arena_index.erase(arena_index.begin() + index)
+            del arena[index]
+        self._index_size_threshold = max(self._index_size_default_threshold,
+                                         len(arena) * 2)
 
     cpdef MemoryPointer _alloc(self, Py_ssize_t rounded_size):
         hooks = memory_hook.get_memory_hooks()

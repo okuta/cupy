@@ -54,6 +54,8 @@ cdef class SingleDeviceMemoryPool:
         object _in_use_lock
         readonly Py_ssize_t _allocation_unit_size
         readonly int _device_id
+        readonly int _index_size_default_threshold
+        readonly int _index_size_threshold
         map.map[size_t, vector.vector[int]] _index
 
     cpdef MemoryPointer _alloc(self, Py_ssize_t size)
@@ -75,6 +77,7 @@ cdef class SingleDeviceMemoryPool:
                                       chunk, size_t stream_ptr) except *
     cpdef tuple _split(self, Chunk chunk, Py_ssize_t size)
     cpdef Chunk _merge(self, Chunk head, Chunk remaining)
+    cpdef _compaction(self, size_t stream_ptr)
 
 cdef class MemoryPool:
 
