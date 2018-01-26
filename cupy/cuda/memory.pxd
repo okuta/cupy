@@ -4,18 +4,6 @@ from libcpp cimport map
 from cupy.cuda cimport device
 
 
-cdef class Chunk:
-
-    cdef:
-        readonly device.Device device
-        readonly object mem
-        readonly size_t ptr
-        readonly Py_ssize_t offset
-        readonly Py_ssize_t size
-        public object stream_ptr
-        public Chunk prev
-        public Chunk next
-
 cdef class MemoryPointer:
 
     cdef:
@@ -47,37 +35,24 @@ cdef class SingleDeviceMemoryPool:
     cdef:
         object _allocator
         dict _in_use
-        dict _free
+        dict _arena_pool
         object __weakref__
         object _weakref
         object _free_lock
         object _in_use_lock
-        readonly Py_ssize_t _allocation_unit_size
         readonly int _device_id
-        readonly int _index_size_default_threshold
-        readonly int _index_size_threshold
-        map.map[size_t, vector.vector[int]] _index
 
-    cpdef MemoryPointer _alloc(self, Py_ssize_t size)
+    cdef _arena(self, size_t stream_ptr)
     cpdef MemoryPointer malloc(self, Py_ssize_t size)
     cpdef MemoryPointer _malloc(self, Py_ssize_t size)
-    cpdef free(self, size_t ptr, Py_ssize_t size)
+    cdef _free(self, size_t ptr, Py_ssize_t size, size_t stream_ptr)
+    cdef _free_all_blocks(self, size_t stream_ptr)
     cpdef free_all_blocks(self, stream=?, stream_ptr=?)
     cpdef free_all_free(self)
     cpdef n_free_blocks(self)
     cpdef used_bytes(self)
     cpdef free_bytes(self)
     cpdef total_bytes(self)
-    cpdef Py_ssize_t _round_size(self, Py_ssize_t size)
-    cpdef int _bin_index_from_size(self, Py_ssize_t size)
-    cpdef list _arena(self, size_t stream_ptr)
-    cdef vector.vector[int]* _arena_index(self, size_t stream_ptr)
-    cpdef _append_to_free_list(self, Py_ssize_t size, chunk, size_t stream_ptr)
-    cpdef bint _remove_from_free_list(self, Py_ssize_t size,
-                                      chunk, size_t stream_ptr) except *
-    cpdef tuple _split(self, Chunk chunk, Py_ssize_t size)
-    cpdef Chunk _merge(self, Chunk head, Chunk remaining)
-    cpdef _compaction(self, size_t stream_ptr)
 
 cdef class MemoryPool:
 
