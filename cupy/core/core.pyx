@@ -1895,11 +1895,23 @@ include "reduction.pxi"
 
 cdef str _id = 'out0 = in0'
 
+cdef str _elementwise_copy_preamble = '''
+template<typename T, typename U>
+__device__ void convert(T x, U& y) {y = U(x);}
+
+__device__ void convert(complex<float> x, float& y) {y = x.real();}
+__device__ void convert(complex<float> x, double& y) {y = x.real();}
+__device__ void convert(complex<double> x, float& y) {y = x.real();}
+__device__ void convert(complex<double> x, double& y) {y = x.real();}
+'''
+
 elementwise_copy = create_ufunc(
     'cupy_copy',
     ('?->?', 'b->b', 'B->B', 'h->h', 'H->H', 'i->i', 'I->I', 'l->l', 'L->L',
-     'q->q', 'Q->Q', 'e->e', 'f->f', 'd->d', 'F->F', 'D->D'),
-    'out0 = out0_type(in0)', default_casting='unsafe')
+     'q->q', 'Q->Q', 'e->e', 'f->f', 'd->d',
+     'F->F', 'D->D'),
+    'convert(in0, out0)', default_casting='unsafe',
+    preamble=_elementwise_copy_preamble)
 # complex numbers requires out0 = complex<T>(in0)
 
 elementwise_copy_where = create_ufunc(
