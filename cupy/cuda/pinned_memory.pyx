@@ -276,7 +276,7 @@ cdef class PinnedMemoryPool:
 
     def __init__(self, allocator=_malloc):
         self._in_use = {}
-        self._free = collections.defaultdict(list)
+        self._free = {}
         self._alloc = allocator
         self._weakref = weakref.ref(self)
         self._lock = rlock.create_fastrlock()
@@ -293,7 +293,7 @@ cdef class PinnedMemoryPool:
         size = ((size + unit - 1) // unit) * unit
         rlock.lock_fastrlock(self._lock, -1, True)
         try:
-            free = self._free[size]
+            free = self._free.get(size, None)
             if free:
                 mem = free.pop()
             else:
@@ -318,6 +318,8 @@ cdef class PinnedMemoryPool:
             mem = self._in_use.pop(ptr, None)
             if mem is None:
                 raise RuntimeError('Cannot free out-of-pool memory')
+            if size not in self._free:
+                self._free[size] = []
             free = self._free[size]
             free.append(mem)
         finally:

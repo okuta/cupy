@@ -24,7 +24,7 @@ cdef class PinnedMemoryPool:
     cdef:
         object _alloc
         dict _in_use
-        object _free
+        dict _free
         object __weakref__
         object _weakref
         object _lock
