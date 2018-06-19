@@ -86,7 +86,7 @@ def isfortran(a):
     >>> cupy.isfortran(a)
     False
 
-    >>> b = cupy.array([[1, 2, 3], [4, 5, 6]], order='FORTRAN')
+    >>> b = cupy.array([[1, 2, 3], [4, 5, 6]], order='F')
     >>> b
     array([[1, 2, 3],
            [4, 5, 6]])
