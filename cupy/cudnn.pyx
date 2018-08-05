@@ -480,10 +480,14 @@ def create_reduce_tensor_descriptor(reduce_type, dtype):
     return desc
 
 
-cpdef bint is_tensor_core_available(dtype) except *:
-    return (_cudnn_version >= 7000 and
-            dtype == numpy.float16 and
-            int(device.get_compute_capability()) == 70)
+cpdef bint is_tensor_core_available(dtype, bint always) except *:
+    if always:
+        return (_cudnn_version >= 7000 and
+                int(device.get_compute_capability()) == 70)
+    else:
+        return (_cudnn_version >= 7000 and
+                dtype == numpy.float16 and
+                int(device.get_compute_capability()) == 70)
 
 
 class DropoutStates(object):
@@ -759,10 +763,10 @@ cpdef tuple _get_algorithm_bwd_data(
 cpdef bint _should_use_tensor_core(
         str tensor_core_mode, object dtype) except *:
     if tensor_core_mode == 'auto':
-        return is_tensor_core_available(dtype)
+        return is_tensor_core_available(dtype, False)
     elif tensor_core_mode == 'always':
         # TODO(oktua): more strict condition
-        return is_tensor_core_available(dtype)
+        return is_tensor_core_available(dtype, True)
     elif tensor_core_mode == 'never':
         return False
     else:
