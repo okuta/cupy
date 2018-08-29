@@ -833,20 +833,13 @@ class ufunc(core.ufunc):
         if cupy_op is None:
             cupy_op = fusion_op
 
-        self.name = fusion_op.name
+        super(ufunc, self).__init__(
+            fusion_op.name, fusion_op.nin, fusion_op.nout, fusion_op._ops,
+            fusion_op._preamble, fusion_op._loop_prep, cupy_op.__doc__,
+            fusion_op._default_casting)
         self.__name__ = self.name
-        self.nin = fusion_op.nin
-        self.nout = fusion_op.nout
-        self.nargs = fusion_op.nargs
-        self._ops = fusion_op._ops
-        self._preamble = fusion_op._preamble
-        self.__doc__ = cupy_op.__doc__
-        self._params = fusion_op._params
-        self._routine_cache = fusion_op._routine_cache
-
         self._fusion_op = fusion_op
         self._cupy_op = cupy_op
-        self._preamble = fusion_op._preamble
 
     def __repr__(self):
         return repr(self._cupy_op)

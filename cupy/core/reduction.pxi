@@ -213,16 +213,18 @@ class simple_reduction_function(object):
         cdef tuple in_sahpe, reduce_axis, out_axis
         cdef Py_ssize_t block_size, reduce_block_size, block_stride
         cdef Py_ssize_t out_block_num
+        cdef ndarray ret
         if dtype is not None:
             dtype = get_dtype(dtype).type
 
         in_args = [a]
         a_shape = a.shape
+        dev_id = device.get_device_id()
         if out is None:
-            _preprocess_args((a,))
+            _check_args(in_args, dev_id)
             out_args = []
         else:
-            _preprocess_args((a, out))
+            _check_args([a, out], dev_id)
             out_args = [out]
 
         in_types, out_types, routine = _guess_routine(
@@ -232,8 +234,8 @@ class simple_reduction_function(object):
         del axis  # to avoid bug
         out_shape = _get_out_shape(a_shape, reduce_axis, out_axis, keepdims)
         out_args = _get_out_args(out_args, out_types, out_shape, 'unsafe')
-        ret = out_args[0] if len(out_args) == 1 else tuple(out_args)
-        if (<ndarray>out_args[0]).size == 0:
+        ret = out_args[0]
+        if ret.size == 0:
             return ret
         if a.size == 0 and self.identity is None:
             raise ValueError(('zero-size array to reduction operation'
@@ -256,7 +258,7 @@ class simple_reduction_function(object):
 
         kern = _get_simple_reduction_function(
             routine, self._params, args_info,
-            in_args[0].dtype.type, out_args[0].dtype.type, out_types,
+            in_args[0].dtype.type, ret.dtype.type, out_types,
             self.name, block_size, self.identity,
             self._input_expr, self._output_expr, self._preamble, ())
 
@@ -390,6 +392,7 @@ class ReductionKernel(object):
         if n_args != self.nin and n_args != self.nargs:
             raise TypeError('Wrong number of arguments for %s' % self.name)
 
+        in_args = list(args[:self.nin])
         out_args = list(args[self.nin:])
         if out is not None:
             if self.nout != 1:
@@ -398,10 +401,10 @@ class ReductionKernel(object):
                 raise ValueError("cannot specify 'out' as both "
                                  "a positional and keyword argument")
             out_args = [out]
-
-        in_args = _preprocess_args(args[:self.nin])
-        out_args = _preprocess_args(out_args)
-        in_args, broad_shape = _broadcast(in_args, self.in_params, False)
+        dev_id = device.get_device_id()
+        _preprocess_args(in_args, dev_id)
+        _check_args(out_args, dev_id)
+        broad_shape = _broadcast(in_args, self.in_params, False)
 
         if self.identity is None and 0 in broad_shape:
             raise ValueError(('zero-size array to reduction operation'

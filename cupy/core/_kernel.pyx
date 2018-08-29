@@ -56,34 +56,51 @@ cdef dict _kind_score = {
 }
 
 
-cpdef list _preprocess_args(args, bint use_c_scalar=False):
-    """Preprocesses arguments for kernel invocation
-
-    - Checks device compatibility for ndarrays
-    - Converts Python scalars into NumPy scalars
-    """
-    cdef list ret = []
-    cdef int dev_id = device.get_device_id()
+cdef _check_args(list args, int dev_id):
+    """Checks device compatibility for ndarrays"""
     cdef type typ
 
     for arg in args:
         typ = type(arg)
         if typ is ndarray:
             arr_dev_id = (<ndarray?>arg).data.device_id
-            if arr_dev_id != dev_id:
-                raise ValueError(
-                    'Array device must be same as the current '
-                    'device: array device = %d while current = %d'
-                    % (arr_dev_id, dev_id))
+            if arr_dev_id == dev_id:
+                continue
+            raise ValueError(
+                'Array device must be same as the current device: '
+                'array device = %d while current = %d'
+                % (arr_dev_id, dev_id))
+        else:
+            raise TypeError('Unsupported type %s' % typ)
+
+
+cdef _preprocess_args(list args, int dev_id, bint use_c_scalar=False):
+    """Preprocesses arguments for kernel invocation
+
+    - Checks device compatibility for ndarrays
+    - Converts Python scalars into NumPy scalars
+    """
+    cdef int i
+    cdef type typ
+
+    for i, arg in enumerate(args):
+        typ = type(arg)
+        if typ is ndarray:
+            arr_dev_id = (<ndarray?>arg).data.device_id
+            if arr_dev_id == dev_id:
+                continue
+            raise ValueError(
+                'Array device must be same as the current device: '
+                'array device = %d while current = %d'
+                % (arr_dev_id, dev_id))
         else:
             arg = _scalar.convert_scalar(arg, use_c_scalar)
             if arg is None:
                 raise TypeError('Unsupported type %s' % typ)
-        ret.append(arg)
-    return ret
+            args[i] = arg
 
 
-cpdef tuple _get_args_info(list args):
+cdef tuple _get_args_info(list args):
     ret = []
     for a in args:
         t = type(a)
@@ -97,17 +114,18 @@ cpdef tuple _get_args_info(list args):
     return tuple(ret)
 
 
-cpdef str _get_kernel_params(tuple params, tuple args_info):
+cdef str _get_kernel_params(tuple params, tuple args_info):
     cdef ParameterInfo p
+    cdef bint is_array
     ret = []
-    for i in range(len(params)):
-        p = params[i]
+    for i, p in enumerate(params):
         type, dtype, ndim = <tuple>(args_info[i])
-        is_array = type is ndarray
+        is_array = False
         if type is Indexer:
             t = 'CIndexer<%d>' % ndim
         else:
             t = _get_typename(dtype)
+            is_array = type is ndarray
             if is_array:
                 t = 'CArray<%s, %d>' % (t, ndim)
         ret.append('{}{} {}{}'.format(
@@ -118,7 +136,7 @@ cpdef str _get_kernel_params(tuple params, tuple args_info):
     return ', '.join(ret)
 
 
-cpdef tuple _reduce_dims(list args, tuple params, tuple shape):
+cdef tuple _reduce_dims(list args, tuple params, tuple shape):
     """ Remove contiguous stride to optimize CUDA kernel."""
     cdef int i, ax, last_ax, ndim
     cdef Py_ssize_t total_size
@@ -186,6 +204,7 @@ cpdef tuple _reduce_dims(list args, tuple params, tuple shape):
     return tuple(newshape)
 
 
+@cython.final
 cdef class ParameterInfo:
     cdef:
         readonly str name
@@ -288,15 +307,14 @@ cdef tuple _decide_params_type_core(
 
 
 cdef tuple _broadcast(list args, tuple params, bint use_size):
-    cpdef Py_ssize_t i
+    cpdef int i
     cpdef ParameterInfo p
     cpdef bint is_none, is_not_none
     value = []
     is_none = False
     is_not_none = False
-    for i in range(len(args)):
+    for i, a in enumerate(args):
         p = params[i]
-        a = args[i]
         if not p.raw and isinstance(a, ndarray):
             is_not_none = True
             value.append(a)
@@ -313,12 +331,10 @@ cdef tuple _broadcast(list args, tuple params, bint use_size):
             raise ValueError('Loop size is Undecided')
     brod = broadcast(*value)
     value = []
-    for i in range(len(args)):
-        a = brod.values[i]
-        if a is None:
-            a = args[i]
-        value.append(a)
-    return value, brod.shape
+    for i, a in enumerate(brod.values):
+        if a is not None:
+            args[i] = a
+    return brod.shape
 
 
 cdef list _get_out_args(list out_args, tuple out_types, tuple out_shape,
@@ -357,9 +373,8 @@ cdef list _get_out_args_with_params(
         return [ndarray(out_shape, t) for t in out_types]
 
     shape = out_shape
-    for i in range(len(out_params)):
+    for i, p in enumerate(out_params):
         a = out_args[i]
-        p = out_params[i]
         if not isinstance(a, ndarray):
             raise TypeError(
                 'Output arguments type must be cupy.ndarray')
@@ -374,7 +389,7 @@ cdef function.Function _get_elementwise_kernel(
         str preamble, dict kwargs):
     kernel_params = _get_kernel_params(params, args_info)
     types_preamble = '\n'.join(
-        'typedef %s %s;' % (_get_typename(v), k) for k, v in types)
+        ['typedef %s %s;' % (_get_typename(v), k) for k, v in types])
     preamble = types_preamble + '\n' + preamble
 
     op = []
@@ -435,19 +450,19 @@ cdef class ElementwiseKernel:
     cdef:
         readonly tuple in_params
         readonly tuple out_params
-        readonly Py_ssize_t nin
-        readonly Py_ssize_t nout
-        readonly Py_ssize_t nargs
         readonly tuple params
         readonly str operation
         readonly str name
-        readonly bint reduce_dims
         readonly str preamble
-        readonly bint no_return
-        readonly bint return_tuple
         readonly dict kwargs
         readonly dict _kernel_memo
         readonly dict _params_type_memo
+        readonly int nin
+        readonly int nout
+        readonly int nargs
+        readonly bint reduce_dims
+        readonly bint no_return
+        readonly bint return_tuple
 
     def __init__(self, in_params, out_params, operation,
                  name='kernel', reduce_dims=True, preamble='',
@@ -510,11 +525,13 @@ cdef class ElementwiseKernel:
         n_args = len(args)
         if n_args != self.nin and n_args != self.nargs:
             raise TypeError('Wrong number of arguments for %s' % self.name)
-        args = _preprocess_args(args, True)
+        arg_list = list(args)
+        dev_id = device.get_device_id()
+        _preprocess_args(arg_list, dev_id, True)
 
-        values, shape = _broadcast(args, self.params, size != -1)
-        in_args = values[:self.nin]
-        out_args = args[self.nin:]
+        out_args = arg_list[self.nin:]
+        shape = _broadcast(arg_list, self.params, size != -1)
+        in_args = arg_list[:self.nin]
 
         in_ndarray_types = tuple(
             [a.dtype.type if isinstance(a, ndarray) else None
@@ -553,12 +570,12 @@ cdef class ElementwiseKernel:
         inout_args.append(indexer)
 
         args_info = _get_args_info(inout_args)
-        kern = self._get_elementwise_kernel(args_info, types)
+        kern = self._get_elementwise_kernel(args_info, types, dev_id)
         kern.linear_launch(indexer.size, inout_args, shared_mem=0,
                            block_max_size=128, stream=stream)
         return ret
 
-    cpdef tuple _decide_params_type(
+    cdef tuple _decide_params_type(
             self, tuple in_args_dtype, tuple out_args_dtype):
         key = (in_args_dtype, out_args_dtype)
         if key in self._params_type_memo:
@@ -568,23 +585,20 @@ cdef class ElementwiseKernel:
         self._params_type_memo[key] = ret
         return ret
 
-    cpdef function.Function _get_elementwise_kernel(
-            self, tuple args_info, tuple types):
-        id = device.get_device_id()
+    cdef function.Function _get_elementwise_kernel(
+            self, tuple args_info, tuple types, int id):
         key = (id, args_info, types)
-        if key in self._kernel_memo:
-            return self._kernel_memo[key]
-        kern = _get_elementwise_kernel(
-            args_info, types, self.params, self.operation,
-            self.name, self.preamble, self.kwargs)
-        self._kernel_memo[key] = kern
+        kern = self._kernel_memo.get(key, None)
+        if kern is None:
+            kern = _get_elementwise_kernel(
+                args_info, types, self.params, self.operation,
+                self.name, self.preamble, self.kwargs)
+            self._kernel_memo[key] = kern
         return kern
 
 
-@util.memoize(for_each_device=True)
-def _get_ufunc_kernel(
-        in_types, out_types, routine, args_info, params, name, preamble,
-        loop_prep):
+def _get_ufunc_kernel(op, args_info, params, name, preamble, loop_prep):
+    in_types, out_types, routine = op
     kernel_params = _get_kernel_params(params, args_info)
 
     types = []
@@ -612,7 +626,7 @@ def _get_ufunc_kernel(
 
 
 cdef tuple _guess_routine_from_in_types(list ops, tuple in_types):
-    cdef Py_ssize_t i, n
+    cdef int i, n
     cdef tuple op, op_types
     n = len(in_types)
     can_cast = numpy.can_cast
@@ -680,11 +694,10 @@ cdef tuple _guess_routine(str name, dict cache, list ops, list in_args, dtype):
         return op
     if dtype is None:
         dtype = tuple([i.dtype.type for i in in_args])
-    raise TypeError('Wrong type (%s) of arguments for %s' %
-                    (dtype, name))
+    raise TypeError(f'Wrong type ({dtype}) of arguments for {name}')
 
 
-class ufunc(object):
+cdef class ufunc:
 
     """Universal function.
 
@@ -695,6 +708,22 @@ class ufunc(object):
         nargs (int): Number of all arguments.
 
     """
+
+    cdef:
+        public tuple _in_params
+        public tuple _out_params
+        public list _ops
+        public str name
+        public str _preamble
+        public str _loop_prep
+        public str __doc__
+        public str _default_casting
+        public tuple _params
+        public dict _routine_cache
+        dict _kernel_memo
+        public int nin
+        public int nout
+        public int nargs
 
     def __init__(self, name, nin, nout, ops, preamble='', loop_prep='', doc='',
                  default_casting=None):
@@ -719,6 +748,7 @@ class ufunc(object):
         self._params = _in_params + _out_params + (
             ParameterInfo('CIndexer _ind', False),)
         self._routine_cache = {}
+        self._kernel_memo = {}
 
     def __repr__(self):
         return "<ufunc '%s'>" % self.name
@@ -753,8 +783,12 @@ class ufunc(object):
             Output array or a tuple of output arrays.
 
         """
+        return self._call(args, kwargs)
 
+    cdef _call(self, tuple args, dict kwargs):
         cdef function.Function kern
+        cdef tuple in_types, out_types
+        cdef str casting
 
         out = kwargs.pop('out', None)
         dtype = kwargs.pop('dtype', None)
@@ -762,17 +796,19 @@ class ufunc(object):
         casting = kwargs.pop('casting', self._default_casting)
         if dtype is not None:
             dtype = get_dtype(dtype).type
-        if kwargs:
-            raise TypeError('Wrong arguments %s' % kwargs)
+        if len(kwargs):
+            raise TypeError(f'Wrong arguments {kwargs}')
 
         n_args = len(args)
         if n_args != self.nin and n_args != self.nargs:
-            raise TypeError('Wrong number of arguments for %s' % self.name)
+            raise TypeError(f'Wrong number of arguments for {self.name}')
+        arg_list = list(args)
 
-        args = _preprocess_args(args)
+        dev_id = device.get_device_id()
+        _preprocess_args(arg_list, dev_id)
         if out is None:
-            in_args = args[:self.nin]
-            out_args = args[self.nin:]
+            in_args = arg_list[:self.nin]
+            out_args = arg_list[self.nin:]
         else:
             if self.nout != 1:
                 raise ValueError("Cannot use 'out' in %s" % self.name)
@@ -780,15 +816,17 @@ class ufunc(object):
                 raise ValueError("Cannot specify 'out' as both "
                                  "a positional and keyword argument")
 
-            in_args = list(args)
-            out_args = _preprocess_args((out,))
-            args += out_args
+            out_args = [out]
+            _check_args(out_args, dev_id)
+            in_args = arg_list
+            arg_list = in_args + out_args
 
-        broad = broadcast(*args)
+        broad = broadcast(*arg_list)
         shape = broad.shape
 
-        in_types, out_types, routine = _guess_routine(
+        op = _guess_routine(
             self.name, self._routine_cache, self._ops, in_args, dtype)
+        in_types, out_types, routine = op
 
         out_args = _get_out_args(out_args, out_types, shape, casting)
         if self.nout == 1:
@@ -810,12 +848,20 @@ class ufunc(object):
         inout_args.append(indexer)
         args_info = _get_args_info(inout_args)
 
-        kern = _get_ufunc_kernel(
-            in_types, out_types, routine, args_info,
-            self._params, self.name, self._preamble, self._loop_prep)
+        kern = self._get_ufunc_kernel(op, args_info, dev_id)
 
         kern.linear_launch(indexer.size, inout_args)
         return ret
+
+    cdef function.Function _get_ufunc_kernel(self, op, args_info, dev_id):
+        key = (dev_id, id(op), args_info)
+        kern = self._kernel_memo.get(key, None)
+        if kern is None:
+            kern = _get_ufunc_kernel(
+                op, args_info,
+                self._params, self.name, self._preamble, self._loop_prep)
+            self._kernel_memo[key] = kern
+        return kern
 
 
 cpdef create_ufunc(name, ops, routine=None, preamble='', doc='',
