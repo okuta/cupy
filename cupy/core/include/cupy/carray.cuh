@@ -62,6 +62,15 @@ public:
     return (__half_raw(data_).x & 0x7fffu) == 0;
   }
 
+  __device__ int isfinite() const {
+    return (__half_raw(data_).x & 0x7c00u) != 0x7c00u;
+  }
+
+  __device__ int signbit() const {
+    return (__half_raw(data_).x & 0x8000u) != 0;
+  }
+
+#if __CUDA_ARCH__ < 530
   __device__ int isnan() const {
     __half_raw raw_ = __half_raw(data_);
     return (raw_.x & 0x7c00u) == 0x7c00u && (raw_.x & 0x03ffu) != 0x0000u;
@@ -71,13 +80,46 @@ public:
     return (__half_raw(data_).x & 0x7fffu) == 0x7c00u;
   }
 
-  __device__ int isfinite() const {
-    return (__half_raw(data_).x & 0x7c00u) != 0x7c00u;
+#else  // #if __CUDA_ARCH__ < 530
+  __device__ int isnan() const {return __hisnan(__half(data_));}
+  __device__ int isinf() const {return __hisinf(__half(data_));}
+
+  __device__ float16 operator+(const float16 &rh) const {
+    return float16(__hadd(__half(data_), __half(rh.data_)));
+  }
+  __device__ float16 operator-(const float16 &rh) const {
+    return float16(__hsub(__half(data_), __half(rh.data_)));
+  }
+  __device__ float16 operator*(const float16 &rh) const {
+    return float16(__hmul(__half(data_), __half(rh.data_)));
+  }
+  __device__ float16 operator/(const float16 &rh) const {
+    return float16(__hdiv(__half(data_), __half(rh.data_)));
   }
 
-  __device__ int signbit() const {
-    return (__half_raw(data_).x & 0x8000u) != 0;
+  __device__ float16 operator+() { return *this; }
+  __device__ float16 operator-() { return float16(__hneg(__half(data_))); }
+
+  __device__ bool operator==(const float16 &rh) {
+    return __heq(__half(data_), __half(rh.data_));
   }
+  __device__ bool operator!=(const float16 &rh) {
+    return __hne(__half(data_), __half(rh.data_));
+  }
+  __device__ bool operator>(const float16 &rh) {
+    return __hgt(__half(data_), __half(rh.data_));
+  }
+  __device__ bool operator<(const float16 &rh) {
+    return __hlt(__half(data_), __half(rh.data_));
+  }
+  __device__ bool operator>=(const float16 &rh) {
+    return __hge(__half(data_), __half(rh.data_));
+  }
+  __device__ bool operator<=(const float16 &rh) {
+    return __hle(__half(data_), __half(rh.data_));
+  }
+
+#endif  // #if __CUDA_ARCH__ < 530
 
   template<typename T>
   inline __device__ float16& operator+=(const T& rhs) {
@@ -143,19 +185,43 @@ private:
   }
 };
 
+#if __CUDA_ARCH__ >= 530
+template <class T> __device__ T operator+(T x, float16 y) { return x + T(y);}
+template <class T> __device__ T operator+(float16 x, T y) { return T(x) + y;}
+template <class T> __device__ T operator-(T x, float16 y) { return x - T(y);}
+template <class T> __device__ T operator-(float16 x, T y) { return T(x) - y;}
+template <class T> __device__ T operator*(T x, float16 y) { return x * T(y);}
+template <class T> __device__ T operator*(float16 x, T y) { return T(x) * y;}
+template <class T> __device__ T operator/(T x, float16 y) { return x / T(y);}
+template <class T> __device__ T operator/(float16 x, T y) { return T(x) / y;}
+
+template <class T> __device__ T operator==(T x, float16 y) {return x == T(y);}
+template <class T> __device__ T operator==(float16 x, T y) {return T(x) == y;}
+template <class T> __device__ T operator!=(T x, float16 y) {return x != T(y);}
+template <class T> __device__ T operator!=(float16 x, T y) {return T(x) != y;}
+template <class T> __device__ T operator>(T x, float16 y) {return x > T(y);}
+template <class T> __device__ T operator>(float16 x, T y) {return T(x) > y;}
+template <class T> __device__ T operator<(T x, float16 y) {return x < T(y);}
+template <class T> __device__ T operator<(float16 x, T y) {return T(x) < y;}
+template <class T> __device__ T operator>=(T x, float16 y) {return x >= T(y);}
+template <class T> __device__ T operator>=(float16 x, T y) {return T(x) >= y;}
+template <class T> __device__ T operator<=(T x, float16 y) {return x <= T(y);}
+template <class T> __device__ T operator<=(float16 x, T y) {return T(x) <= y;}
+#endif  // #if __CUDA_ARCH__ >= 530
 
 __device__ float16 min(float16 x, float16 y) {
-  return float16(min(float(x), float(y)));
+  return x < y ? x : y;
 }
 __device__ float16 max(float16 x, float16 y) {
-  return float16(max(float(x), float(y)));
+  return x > y ? x : y;
 }
 __device__ float16 fmin(float16 x, float16 y) {
-  return float16(fmin(float(x), float(y)));
+  return (x <= y || y.isnan()) ? x : y;
 }
 __device__ float16 fmax(float16 x, float16 y) {
-  return float16(fmax(float(x), float(y)));
+  return (x >= y || y.isnan()) ? x : y;
 }
+
 __device__ int iszero(float16 x) {return x.iszero();}
 __device__ int isnan(float16 x) {return x.isnan();}
 __device__ int isinf(float16 x) {return x.isinf();}
