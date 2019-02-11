@@ -663,7 +663,7 @@ cdef _compact_index(SingleDeviceMemoryPool pool, size_t stream_ptr, bint free):
         pool._arena_flag(stream_ptr).assign(new_index.size(), <int8_t>1)
 
 
-cdef object _get_chunk(SingleDeviceMemoryPool pool, size_t size,
+cdef _Chunk _get_chunk(SingleDeviceMemoryPool pool, size_t size,
                        size_t stream_ptr):
     # need self._free_lock
     cdef set free_list
