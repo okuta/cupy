@@ -684,7 +684,6 @@ cdef object _get_chunk(SingleDeviceMemoryPool pool, size_t size,
         chunk = free_list.pop()
         if len(free_list) == 0:
             dereference(a_flag)[i] = 0
-            arena[i] = None
         if i - index >= _index_compaction_threshold:
             _compact_index(pool, stream_ptr, False)
         remaining = chunk.split(size)
@@ -745,8 +744,7 @@ cdef _append_to_free_list(list arena, vector.vector[size_t]* a_index,
         - a_index.begin())
     if index < a_index.size() and a_index.at(index) == bin_index:
         free_list = arena[index]
-        if free_list is None:
-            arena[index] = free_list = set()
+        assert free_list is not None
     else:
         free_list = set()
         a_index.insert(a_index.begin() + index, bin_index)
@@ -785,7 +783,6 @@ cdef bint _remove_from_free_list(list arena, vector.vector[size_t]* a_index,
     if chunk in free_list:
         free_list.remove(chunk)
         if len(free_list) == 0:
-            arena[index] = None
             dereference(a_flag)[index] = 0
         return True
     return False
