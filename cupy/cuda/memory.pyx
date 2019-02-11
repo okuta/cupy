@@ -653,7 +653,7 @@ cdef _compact_index(SingleDeviceMemoryPool pool, size_t stream_ptr, bint free):
 
         new_index.push_back(arena_index.at(index))
         new_arena.append(free_list)
-    if free and len(new_arena) == 0:
+    if free and len(new_arena) == 0 and stream_ptr != 0:
         pool._index.erase(stream_ptr)
         pool._flag.erase(stream_ptr)
         del pool._free[stream_ptr]
@@ -873,6 +873,9 @@ cdef class SingleDeviceMemoryPool:
         # `_total_bytes_lock` must be acquired to access it.
         size_t _total_bytes_limit
 
+        # Hold null stream to performance
+        list _free_null_stream
+
         object __weakref__
         object _weakref
         object _free_lock
@@ -887,7 +890,8 @@ cdef class SingleDeviceMemoryPool:
 
     def __init__(self, allocator=_malloc):
         self._in_use = {}
-        self._free = {}
+        self._free_null_stream = []
+        self._free = {0: self._free_null_stream}
         self._allocator = allocator
         self._weakref = weakref.ref(self)
         self._device_id = device.get_device_id()
@@ -904,6 +908,8 @@ cdef class SingleDeviceMemoryPool:
 
         Caller is responsible to acquire `_free_lock`.
         """
+        if stream_ptr == 0:
+            return self._free_null_stream
         ret = self._free.get(stream_ptr, None)
         if ret is None:
             self._free[stream_ptr] = ret = []
