@@ -566,6 +566,9 @@ cdef class PooledMemory(BaseMemory):
         readonly object pool
 
     def __init__(self, _Chunk chunk, pool):
+        self._init(chunk, pool)
+
+    cdef _init(self, _Chunk chunk, pool):
         self.ptr = chunk.ptr()
         self.size = chunk.size
         self.device_id = chunk.mem.device_id
@@ -982,8 +985,12 @@ cdef class SingleDeviceMemoryPool:
     cpdef MemoryPointer _malloc(self, size_t size):
         cdef _Chunk chunk
         cdef BaseMemory mem
+        cdef PooledMemory pmem
+        cdef MemoryPointer ret = MemoryPointer.__new__(MemoryPointer)
+
         if size == 0:
-            return MemoryPointer(Memory(0), 0)
+            ret._init(Memory(0), 0)
+            return ret
 
         stream_ptr = stream_module.get_current_stream_ptr()
 
@@ -1002,8 +1009,10 @@ cdef class SingleDeviceMemoryPool:
             self._in_use[chunk.ptr()] = chunk
         finally:
             rlock.unlock_fastrlock(self._in_use_lock)
-        pmem = PooledMemory(chunk, self._weakref)
-        return MemoryPointer(pmem, 0)
+        pmem = PooledMemory.__new__(PooledMemory)
+        pmem._init(chunk, self._weakref)
+        ret._init(pmem, 0)
+        return ret
 
     cpdef free(self, intptr_t ptr, size_t size):
         cdef _Chunk chunk, c
