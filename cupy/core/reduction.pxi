@@ -258,8 +258,8 @@ class simple_reduction_function(object):
         in_args, in_shape, contiguous_size = _get_permuted_args(
             in_args, reduce_axis + out_axis, a_shape, None, len(out_axis))
 
-        in_indexer = Indexer(in_shape)
-        out_indexer = Indexer(out_shape)
+        in_indexer = _get_indexer(in_shape)
+        out_indexer = _get_indexer(out_shape)
         block_size, block_stride, out_block_num = _get_block_specs(
             in_indexer, out_indexer, contiguous_size)
 
@@ -446,8 +446,8 @@ class ReductionKernel(object):
             in_args, reduce_axis + out_axis, broad_shape, self.in_params,
             len(out_axis))
 
-        in_indexer = Indexer(in_shape)
-        out_indexer = Indexer(out_shape)
+        in_indexer = _get_indexer(in_shape)
+        out_indexer = _get_indexer(out_shape)
         block_size, block_stride, out_block_num = _get_block_specs(
             in_indexer, out_indexer, contiguous_size)
 

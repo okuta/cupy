@@ -20,6 +20,9 @@ cdef class CArray(CPointer):
         _CArray val
 
     def __init__(self, ndarray arr):
+        self._init(arr)
+
+    cdef _init(self, ndarray arr):
         cdef Py_ssize_t i
         cdef int ndim = arr._shape.size()
         self.val.data = <void*>arr.data.ptr
@@ -40,6 +43,9 @@ cdef class CIndexer(CPointer):
         _CIndexer val
 
     def __init__(self, Py_ssize_t size, tuple shape):
+        self._init(size, shape)
+
+    cdef _init(self, Py_ssize_t size, tuple shape):
         self.val.size = size
         cdef Py_ssize_t i
         for i in range(len(shape)):
@@ -48,7 +54,11 @@ cdef class CIndexer(CPointer):
 
 
 cdef class Indexer:
+
     def __init__(self, tuple shape):
+        self._init(shape)
+
+    cdef _init(self, tuple shape):
         cdef Py_ssize_t size = 1
         for s in shape:
             size *= s
@@ -60,7 +70,15 @@ cdef class Indexer:
         return len(self.shape)
 
     cdef CPointer get_pointer(self):
-        return CIndexer(self.size, self.shape)
+        cdef CIndexer ret = CIndexer.__new__(CIndexer)
+        ret._init(self.size, self.shape)
+        return ret
+
+
+cdef Indexer _get_indexer(tuple shape):
+    cdef Indexer ret = Indexer.__new__(Indexer)
+    ret._init(shape)
+    return ret
 
 
 cdef list _cupy_header_list = [

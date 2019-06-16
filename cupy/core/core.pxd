@@ -97,7 +97,11 @@ cdef class Indexer:
         readonly Py_ssize_t size
         readonly tuple shape
 
+    cdef _init(self, tuple shape)
     cdef CPointer get_pointer(self)
+
+
+cdef Indexer _get_indexer(tuple shape)
 
 
 cpdef ndarray _internal_ascontiguousarray(ndarray a)
